@@ -1,11 +1,9 @@
+import requests
 from fastapi import FastAPI, HTTPException, Query
-from sqlalchemy.orm import Session
-
-from database import engine, SessionLocal
-from models import Pokemon
 from pydantic import BaseModel
 from typing import Optional
-import requests
+from database import SessionLocal
+from models import Pokemon
 
 app = FastAPI()
 
@@ -29,6 +27,40 @@ class PokemonResponse(PokemonCreate):
     class Config:
         orm_mode = True
 
+@app.get("/pokemon/{pokemon_id}", response_model=PokemonResponse, summary="Get a Pokémon by ID")
+def get_pokemon_by_id(pokemon_id: int):
+    pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
+    if pokemon is None:
+        raise HTTPException(status_code=404, detail="Pokémon not found")
+    return pokemon
+
+@app.get("/pokemon", response_model=list[PokemonResponse], summary="List Pokémon with sorting and searching")
+def pokemon_list(
+    order: str = Query("asc", description="Ordering of Pokémon: 'asc' for ascending or 'desc' for descending"),
+    limit: int = Query(10, description="Number of Pokémon to return"),
+    keyword: Optional[str] = None,
+    column: str = Query("name", description="Column to search in (default is 'name')")
+):
+    query = db.query(Pokemon)
+
+    if keyword:
+        try:
+            query = query.filter(getattr(Pokemon, column).ilike(f"%{keyword}%"))
+        except AttributeError:
+            raise HTTPException(status_code=400, detail=f"Invalid column: {column}")
+
+    if order == "asc":
+        query = query.order_by(Pokemon.id.asc())
+    elif order == "desc":
+        query = query.order_by(Pokemon.id.desc())
+    else:
+        raise HTTPException(status_code=400, detail="Invalid order parameter. Use 'asc' or 'desc'.")
+
+    pokemons = query.limit(limit).all()
+
+    return pokemons
+
+
 @app.post("/pokemon", response_model=PokemonResponse, summary="Create a new Pokémon")
 def create_pokemon(pokemon: PokemonCreate):
     db_pokemon = Pokemon(**pokemon.dict())
@@ -48,6 +80,7 @@ def fetch_and_load_pokemons():
         if not isinstance(pokemon_data, list):
             raise HTTPException(status_code=400, detail="Invalid data format")
 
+        pokemon_objects = []
         for item in pokemon_data:
             pokemon = Pokemon(
                 name=item["Name"],
@@ -61,22 +94,17 @@ def fetch_and_load_pokemons():
                 sp_defense=item["Sp. Def"],
                 speed=item["Speed"]
             )
-            db.add(pokemon)
+            pokemon_objects.append(pokemon)
 
+        db.bulk_save_objects(pokemon_objects)
         db.commit()
+
         return {"status": "success", "message": "Pokémon data loaded successfully"}
 
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except KeyError as e:
         raise HTTPException(status_code=400, detail=f"Missing key in data: {e}")
-
-@app.get("/pokemon/{pokemon_id}", response_model=PokemonResponse, summary="Get a Pokémon by ID")
-def get_pokemon_by_id(pokemon_id: int):
-    pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
-    if pokemon is None:
-        raise HTTPException(status_code=404, detail="Pokémon not found")
-    return pokemon
 
 @app.put("/pokemon/{pokemon_id}", response_model=PokemonResponse, summary="Update a Pokémon by ID")
 def update_pokemon(pokemon_id: int, pokemon_update: PokemonCreate):
@@ -101,14 +129,3 @@ def delete_pokemon(pokemon_id: int):
     db.commit()
     return None
 
-
-@app.get("/pokemon")
-def pokemon_list(order: str):
-    if order == "asc":
-        pokemons = db.query(Pokemon).order_by(Pokemon.id.asc()).all()
-    elif order == "desc":
-        pokemons = db.query(Pokemon).order_by(Pokemon.id.desc()).all()
-    else:
-        return {"error": "Invalid order parameter. Use 'asc' or 'desc'."}
-
-    return pokemons
