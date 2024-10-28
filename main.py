@@ -1,37 +1,65 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import List, Optional
-import requests
+from datetime import timedelta
 
 from database import engine, Base, get_db
-from models import Pokemon
+from models import Pokemon, User
+from schemas import (
+    PokemonPostPutInputSchema,
+    PokemonGetOutputSchema,
+    DeleteResponse,
+    UserCreate,
+    UserResponse,
+    Token,
+)
+from auth import (
+    authenticate_user,
+    create_access_token,
+    get_password_hash,
+    get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 
 app = FastAPI()
 
-
-class PokemonCreate(BaseModel):
-    name: str
-    type1: str
-    type2: Optional[str] = None
-    total: int
-    hp: int
-    attack: int
-    defense: int
-    sp_attack: int
-    sp_defense: int
-    speed: int
+Base.metadata.create_all(bind=engine)
 
 
-class PokemonResponse(PokemonCreate):
-    id: int
+@app.post("/register", response_model=UserResponse)
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    hashed_password = get_password_hash(user.password)
+    db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
-    class Config:
-        orm_mode = True
+
+@app.post("/token", response_model=Token)
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "role": user.role}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.post("/pokemons/", response_model=PokemonResponse, summary="Create a new Pokémon")
-def create_pokemon(pokemon: PokemonCreate, db: Session = Depends(get_db)):
+@app.get("/pokemons/", response_model=list[PokemonGetOutputSchema])
+def get_all_pokemons(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    pokemons = db.query(Pokemon).all()
+    return pokemons
+
+
+@app.post("/pokemons/", response_model=PokemonGetOutputSchema)
+def create_pokemon(pokemon: PokemonPostPutInputSchema, db: Session = Depends(get_db),
+                   current_user: User = Depends(get_current_user)):
     db_pokemon = Pokemon(**pokemon.dict())
     db.add(db_pokemon)
     db.commit()
@@ -39,51 +67,9 @@ def create_pokemon(pokemon: PokemonCreate, db: Session = Depends(get_db)):
     return db_pokemon
 
 
-@app.post("/pokemons/post/", response_model=dict, summary="load Pokémon data from URL")
-def fetch_and_load_pokemons(db: Session = Depends(get_db)):
-    url = "https://coralvanda.github.io/pokemon_data.json"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        pokemon_data = response.json()
-
-        if not isinstance(pokemon_data, list):
-            raise HTTPException(status_code=400, detail="Invalid data format")
-
-        for item in pokemon_data:
-            pokemon = Pokemon(
-                name=item["Name"],
-                type1=item["Type 1"],
-                type2=item.get("Type 2"),
-                total=item["Total"],
-                hp=item["HP"],
-                attack=item["Attack"],
-                defense=item["Defense"],
-                sp_attack=item["Sp. Atk"],
-                sp_defense=item["Sp. Def"],
-                speed=item["Speed"]
-            )
-            db.add(pokemon)
-
-        db.commit()
-        return {"status": "success", "message": "Pokémon data loaded successfully"}
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing key in data: {e}")
-
-
-@app.get("/pokemons/{pokemon_id}", response_model=PokemonResponse, summary="Get a Pokémon by ID")
-def get_pokemon_by_id(pokemon_id: int, db: Session = Depends(get_db)):
-    pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
-    if pokemon is None:
-        raise HTTPException(status_code=404, detail="Pokémon not found")
-    return pokemon
-
-
-@app.put("/pokemons/{pokemon_id}", response_model=PokemonResponse, summary="Update a Pokémon by ID")
-def update_pokemon(pokemon_id: int, pokemon_update: PokemonCreate, db: Session = Depends(get_db)):
+@app.put("/pokemons/{pokemon_id}", response_model=PokemonGetOutputSchema, summary="Update a Pokémon by ID")
+def update_pokemon(pokemon_id: int, pokemon_update: PokemonPostPutInputSchema, db: Session = Depends(get_db),
+                   current_user: User = Depends(get_current_user)):
     db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
@@ -96,12 +82,12 @@ def update_pokemon(pokemon_id: int, pokemon_update: PokemonCreate, db: Session =
     return db_pokemon
 
 
-@app.delete("/pokemons/{pokemon_id}", summary="Delete a Pokémon by ID")
-def delete_pokemon(pokemon_id: int, db: Session = Depends(get_db)):
+@app.delete("/pokemons/{pokemon_id}", response_model=DeleteResponse, summary="Delete a Pokémon by ID")
+def delete_pokemon(pokemon_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
 
     db.delete(db_pokemon)
     db.commit()
-    return {"status": "success", "message": "Pokémon deleted successfully"}
+    return DeleteResponse(message="Pokémon deleted successfully")
