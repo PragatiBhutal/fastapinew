@@ -10,8 +10,8 @@ class OurBaseModel(BaseModel):
 # Input Schemas for Pokémon
 class PokemonPostPutInputSchema(OurBaseModel):
     name: str = Field(min_length=2, max_length=30)
-    type_1: str
-    type_2: Optional[str] = None
+    type1: str
+    type2: Optional[str] = None
     total: int
     hp: int
     attack: int
@@ -27,8 +27,8 @@ class PokemonPostPutInputSchema(OurBaseModel):
 class PokemonGetOutputSchema(OurBaseModel):
     id: int
     name: str
-    type_1: str
-    type_2: Optional[str]
+    type1: str
+    type2: Optional[str]
     total: int
     hp: int
     attack: int
@@ -46,11 +46,6 @@ class DeleteResponse(OurBaseModel):
 
 class PokemonPostPutOutputSchema(PokemonGetOutputSchema):
     pass
-
-
-class OurBaseModel(BaseModel):
-    class Config:
-        orm_mode = True
 
 
 class UserCreate(OurBaseModel):

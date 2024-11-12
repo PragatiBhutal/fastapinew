@@ -1,3 +1,4 @@
+import requests
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -55,6 +56,53 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
 def get_all_pokemons(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     pokemons = db.query(Pokemon).all()
     return pokemons
+
+
+@app.get("/pokemons/{pokemon_id}", response_model=PokemonGetOutputSchema, summary="Get a Pokémon by ID")
+def get_pokemon_by_id(pokemon_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
+    if db_pokemon is None:
+        raise HTTPException(status_code=404, detail="Pokémon not found")
+    return db_pokemon
+
+
+@app.post("/pokemon/load", summary="Load Pokémon data from URL")
+def fetch_and_load_pokemons(db: Session = Depends(get_db)):
+    url = "https://coralvanda.github.io/pokemon_data.json"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        pokemon_data = response.json()
+
+        if not isinstance(pokemon_data, list):
+            raise HTTPException(status_code=400, detail="Invalid data format")
+
+        pokemon_mappings = []
+        for item in pokemon_data:
+            pokemon_mapping = {
+                "name": item["Name"],
+                "type1": item["Type 1"],
+                "type2": item.get("Type 2"),
+                "total": item["Total"],
+                "hp": item["HP"],
+                "attack": item["Attack"],
+                "defense": item["Defense"],
+                "sp_attack": item["Sp. Atk"],
+                "sp_defense": item["Sp. Def"],
+                "speed": item["Speed"]
+            }
+            pokemon_mappings.append(pokemon_mapping)
+
+        db.bulk_insert_mappings(Pokemon, pokemon_mappings)
+        print("Pokémon Mappings to be Inserted:", pokemon_mappings)
+        db.commit()
+
+        return {"status": "success", "message": "Pokémon data loaded successfully"}
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing key in data: {e}")
 
 
 @app.post("/pokemons/", response_model=PokemonGetOutputSchema)

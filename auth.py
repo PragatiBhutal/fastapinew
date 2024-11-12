@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
@@ -9,7 +10,7 @@ from fastapi.security import OAuth2PasswordBearer
 from database import get_db
 from models import User
 
-SECRET_KEY = "a0342e90271446facc8f2b84002a4daa797da99772ad11c3efd488c64706b777"
+SECRET_KEY = os.getenv("SECRET_KEY", "your_default_secrete_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

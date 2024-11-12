@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Boolean
 from database import Base
 
 
@@ -20,6 +20,8 @@ class Pokemon(Base):
     hp = Column(Integer)
     attack = Column(Integer)
     defense = Column(Integer)
-    sp_attack = Column(Integer)
-    sp_defense = Column(Integer)
+    sp_atk = Column(Integer)
+    sp_def = Column(Integer)
     speed = Column(Integer)
+    generation = Column(Integer)
+    legendary = Column(Boolean)
