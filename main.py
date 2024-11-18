@@ -1,10 +1,12 @@
 import requests
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from pydantic import BaseModel
+from typing import Optional
 
-from database import engine, Base, get_db
+from database import engine, Base, get_db, SessionLocal
 from models import Pokemon, User
 from schemas import (
     PokemonPostPutInputSchema,
@@ -18,18 +20,23 @@ from auth import (
     authenticate_user,
     create_access_token,
     get_password_hash,
-    get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES,
+    get_current_user,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 
 app = FastAPI()
 
 Base.metadata.create_all(bind=engine)
 
+db = SessionLocal()
+
 
 @app.post("/register", response_model=UserResponse)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     hashed_password = get_password_hash(user.password)
-    db_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
+    db_user = User(
+        username=user.username, hashed_password=hashed_password, role=user.role
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -37,7 +44,9 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/token", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -47,23 +56,60 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username, "role": user.role}, expires_delta=access_token_expires
+        data={"sub": user.username, "role": user.role},
+        expires_delta=access_token_expires,
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.get("/pokemons/", response_model=list[PokemonGetOutputSchema])
-def get_all_pokemons(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    pokemons = db.query(Pokemon).all()
-    return pokemons
-
-
-@app.get("/pokemons/{pokemon_id}", response_model=PokemonGetOutputSchema, summary="Get a Pokémon by ID")
-def get_pokemon_by_id(pokemon_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
-    if db_pokemon is None:
+@app.get(
+    "/pokemon/{pokemon_id}",
+    response_model=PokemonGetOutputSchema,
+    summary="Get a Pokémon by ID",
+)
+def get_pokemon_by_id(pokemon_id: int):
+    pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
+    if pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
-    return db_pokemon
+    return pokemon
+
+
+@app.get(
+    "/pokemon",
+    response_model=list[PokemonGetOutputSchema],
+    summary="List Pokémon with sorting and searching",
+)
+def pokemon_list(
+    order: str = Query(
+        "asc",
+        description="Ordering of Pokémon: 'asc' for ascending or 'desc' for descending",
+    ),
+    limit: int = Query(10, description="Number of Pokémon to return"),
+    keyword: Optional[str] = None,
+    column: str = Query("name", description="Column to search in (default is 'name')"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Pokemon)
+
+    if keyword:
+        try:
+            query = query.filter(getattr(Pokemon, column).ilike(f"%{keyword}%"))
+        except AttributeError:
+            raise HTTPException(status_code=400, detail=f"Invalid column: {column}")
+
+    if order == "asc":
+        query = query.order_by(Pokemon.id.asc())
+    elif order == "desc":
+        query = query.order_by(Pokemon.id.desc())
+    else:
+        raise HTTPException(
+            status_code=400, detail="Invalid order parameter. Use 'asc' or 'desc'."
+        )
+
+    pokemons = query.limit(limit).all()
+
+    return pokemons
 
 
 @app.post("/pokemon/load", summary="Load Pokémon data from URL")
@@ -87,9 +133,11 @@ def fetch_and_load_pokemons(db: Session = Depends(get_db)):
                 "hp": item["HP"],
                 "attack": item["Attack"],
                 "defense": item["Defense"],
-                "sp_attack": item["Sp. Atk"],
-                "sp_defense": item["Sp. Def"],
-                "speed": item["Speed"]
+                "sp_atk": item["Sp. Atk"],
+                "sp_def": item["Sp. Def"],
+                "speed": item["Speed"],
+                "generation": item["Generation"],
+                "legendary": item["Legendary"],
             }
             pokemon_mappings.append(pokemon_mapping)
 
@@ -105,9 +153,14 @@ def fetch_and_load_pokemons(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"Missing key in data: {e}")
 
 
-@app.post("/pokemons/", response_model=PokemonGetOutputSchema)
-def create_pokemon(pokemon: PokemonPostPutInputSchema, db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user)):
+@app.post(
+    "/pokemon", response_model=PokemonGetOutputSchema, summary="Create a new Pokémon"
+)
+def create_pokemon(
+    pokemon: PokemonPostPutInputSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     db_pokemon = Pokemon(**pokemon.dict())
     db.add(db_pokemon)
     db.commit()
@@ -115,9 +168,17 @@ def create_pokemon(pokemon: PokemonPostPutInputSchema, db: Session = Depends(get
     return db_pokemon
 
 
-@app.put("/pokemons/{pokemon_id}", response_model=PokemonGetOutputSchema, summary="Update a Pokémon by ID")
-def update_pokemon(pokemon_id: int, pokemon_update: PokemonPostPutInputSchema, db: Session = Depends(get_db),
-                   current_user: User = Depends(get_current_user)):
+@app.put(
+    "/pokemon/{pokemon_id}",
+    response_model=PokemonGetOutputSchema,
+    summary="Update a Pokémon by ID",
+)
+def update_pokemon(
+    pokemon_id: int,
+    pokemon_update: PokemonPostPutInputSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
@@ -130,12 +191,20 @@ def update_pokemon(pokemon_id: int, pokemon_update: PokemonPostPutInputSchema, d
     return db_pokemon
 
 
-@app.delete("/pokemons/{pokemon_id}", response_model=DeleteResponse, summary="Delete a Pokémon by ID")
-def delete_pokemon(pokemon_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@app.delete(
+    "/pokemon/{pokemon_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a Pokémon by ID",
+)
+def delete_pokemon(
+    pokemon_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     db_pokemon = db.query(Pokemon).filter(Pokemon.id == pokemon_id).first()
     if db_pokemon is None:
         raise HTTPException(status_code=404, detail="Pokémon not found")
 
     db.delete(db_pokemon)
     db.commit()
-    return DeleteResponse(message="Pokémon deleted successfully")
+    return None
